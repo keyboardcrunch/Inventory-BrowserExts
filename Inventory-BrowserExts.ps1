@@ -1,6 +1,6 @@
 <#
     .SYNOPSIS
-        Runs a threaded survey of installed browser extensions for Firefox and Chrome.
+        Runs a threaded survey of installed browser extensions for Chrome, Edge and FireFox.
 
     .DESCRIPTION
         InventoryBrowserExts will search all profiles and users for browsers with extensions installed and output that data to a csv.
@@ -15,7 +15,13 @@
         The path for all saved data to be written. Defaults to .\ if left empty.
 
     .PARAMETER Browser
-        The browser/s to target. Options are Firefox, Chrome or All.
+        The browser/s to target. Options are Chrome, Edge, FireFox or All.
+
+    .NOTES
+        Name: Inventory-BrowserExts
+        Author: keyboardcrunch
+        Date Created: 23/06/18
+        Updated: 16/10/20
 
     .EXAMPLE
         Inventory-BrowserExts -Computername $(Get-Content .\Data\BrowserInstalled.txt) -Browser Chrome -Throttle 25
@@ -32,11 +38,6 @@
         -----------
         Runs a survey of extensions installed for both Firefox and Chrome on all machines within BrowserInstalled.txt 
         and saving data to \\NetworkShare\Extensions\BrowserExtensions.csv. Default 10 threads.
-    
-    .NOTES
-        File Name: Inventory-BrowserExts.ps1
-        Author: keyboardcrunch
-        Date Created: 23/06/18
 #>
 
 Param (
@@ -44,7 +45,7 @@ Param (
     [PSObject]$Computername = $Env:Computername,
     [Int]$Throttle = 10,
     [String]$DataDir = ".\",
-    [ValidateSet('Firefox','Chrome','All')]
+    [ValidateSet('Chrome','Edge','FireFox','All')]
     [String]$Browser = "All"
 )
 
@@ -56,7 +57,7 @@ $ExtensionInventory = [System.IO.Path]::Combine($Archive, "BrowserExtensions.csv
 # Inventory script to be invoked
 $InventoryScript = {
     Param (
-        [ValidateSet('Firefox','Chrome','All')]
+        [ValidateSet('Chrome','Edge','FireFox','All')]
         [String]$Browser = "All"
     )
 
@@ -125,9 +126,7 @@ $InventoryScript = {
             "aapocclcgogkmnckokdopfmhonfmgoek",
             "aohghmighlieiainnegkcijnfilokake",
             "felcaaldnbdncclmgdcncolpebgiejap",
-            "ghbmnnjooekpmoecnnnilnnbdlolhkhi",
-            "jjkchpdmjjdmalgembblgafllbpcjlei", # McAfee Endpoint Security Web Control
-            "hddjhjcbioambdhjejhdlobijkdnbggp"  # McAfee DLP Endpoint Chrome Extension
+            "ghbmnnjooekpmoecnnnilnnbdlolhkhi"
         )
         $UserFolders = Get-ChildItem -Path "C:\Users\" -Exclude $SkipFolders
         ForEach ($User in $UserFolders) {
@@ -162,12 +161,52 @@ $InventoryScript = {
         Return $ExtensionList
     }
 
+    Function EdgeSurvey {
+        $ExtensionList = @()
+        $SkipFolders = ("Public", "Default")
+        $SkipExtensions = @()
+        $UserFolders = Get-ChildItem -Path "C:\Users\" -Exclude $SkipFolders
+        ForEach ($User in $UserFolders) {
+            $Manifests = Get-ChildItem -Path "$($User)\AppData\Local\Microsoft\Edge\User Data\Default\Extensions" -Recurse -Exclude $SkipExtensions -Filter Manifest.json -Force -ErrorAction SilentlyContinue
+            ForEach ($Manifest in $Manifests) {
+                $ExtString = $Manifest.FullName -Split "\\"
+                $ExtString = $ExtString[-3]
+                Try {
+                    $ExtData = Get-Content $Manifest.FullName | ConvertFrom-Json | Select-Object Name, Version
+                    If (-Not($ExtData.Name -like "__MSG_*" -or $SkipExtensions -contains $ExtString)) {
+                        $newRow = [PSCustomObject] @{
+                            Computer = $Computer
+                            User = $($User.Name)
+                            Browser = "Edge"
+                            Extension = $($ExtData.Name)
+                            ExtString = $ExtString
+                        }
+                        $ExtensionList += $newRow
+                    }
+                } Catch {
+                    $newRow = [PSCustomObject] @{
+                        Computer = $Computer
+                        User = $($User.Name)
+                        Browser = "Edge"
+                        Extension = "NAME_RESOLUTION_ERROR"
+                        ExtString = $ExtString
+                    }
+                    $ExtensionList += $newRow
+                }
+            }
+        }
+        <# Edge keeps previous versions, so we'll grab only the unique ones #>
+        Return $ExtensionList | Get-Unique -AsString
+    }
+
     Switch ($Browser) {
-        "Firefox" { $ExtensionList += FirefoxSurvey }
         "Chrome" { $ExtensionList += ChromeSurvey }
+        "Edge" { $ExtensionList += EdgeSurvey }
+        "FireFox" { $ExtensionList += FirefoxSurvey }
         default { 
-            $ExtensionList += FirefoxSurvey
             $ExtensionList += ChromeSurvey
+            $ExtensionList += EdgeSurvey
+            $ExtensionList += FirefoxSurvey
         }
     }
     Return $ExtensionList | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1
